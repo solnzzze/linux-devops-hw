@@ -184,8 +184,8 @@ ls -l /opt/linux-devops-homework/app/
 Изменения в репозитории:
 ```bash
 # systemd/homework-app.service — было
-ExecStart=...
-стало: ExecStart=...
+ExecStart=/opt/linux-devops-homework/server.py
+стало: ExecStart=/opt/linux-devops-homework/app/server.py
 sudo cp systemd/homework-app.service /etc/systemd/system/homework-app.service
 sudo systemctl daemon-reload
 sudo systemctl restart homework-app.service
@@ -229,7 +229,7 @@ Linux DevOps Homework Checker
 [PASS] fixed systemd unit is saved in the repository
 [PASS] fixed application configuration is saved in the repository
 
-
+## Дополнительные наблюдения
 ### Запуск скриптов задания
 sudo ./scripts/setup.sh выдавал Permission denied. ls -l scripts/ показал вывод — права без x, т.е. у setup.sh и check.sh нет права на выполнение. Без бита x файл нельзя запустить как программу даже от root. Менять эти скрипты (в том числе chmod)
 запрещено условиями, поэтому запускала их через интерпретатор:
@@ -239,6 +239,20 @@ sudo bash ./scripts/check.sh
 ### Как определить точный ExecStart
 systemctl cat homework-app.service показывает unit файл, который использует systemd, а systemctl show -p ExecStart homework-app.serviceb  значение параметра так, как его видит systemd.
 
+### Процесс сервиса
+```bash
+systemctl show -p MainPID homework-app.service
+ps -o pid,ppid,user,group,cmd -p 14862
+```
+PID: 14862, PPID: 1. Родительский процесс — [что показал ps -p <PPID>].
+Процесс работает от пользователя homework и группы homework
+
+### /proc/<PID>
+- `/proc/<PID>/status`: [Name, State, PPid, Uid, Gid из вывода]. Uid совпадает с `id homework` (999) —
+  подтверждает, что процесс работает не от root.
+- `/proc/<PID>/cmdline`: [вывод] — подтверждает, что запущен именно `/opt/linux-devops-homework/app/server.py`.
+- `/proc/<PID>/fd/`: [что видно: 0, 1, 2 и socket:[…]]. Дескриптор [номер] — это сокет,
+  тот же `fd=3`, что показывал `ss -lntp` для порта 8080.
 
 ### Маршрут до 1.1.1.1
 ```bash
@@ -259,7 +273,7 @@ setup.sh устанавливает приложение в /opt/linux-devops-ho
 ls  показал, что файла  app.py  из ExecStart нет, есть  server.py   исправила ExecStart.
 3. Программа стала запускаться, но падала с status=1/FAILURE. В journalctl нашлась PermissionError на запись в /var/lib/linux-devops-homework. systemctl show показал, что сервис работает от homework, а `ls -ld` — что каталог принадлежит root с правами 0700 chown homework:homework и chmod 0750.
 4. Сервис стал active, но check.sh сообщил, что порт доступен только через loopback.
-ss -lntp показал 127.0.0.1:8080, источник host = 127.0.0.0 в app.conf заменила на 0.0.0.0
+ss -lntp показал 127.0.0.1:8080, источник host = 127.0.0.1 в app.conf заменила на 0.0.0.0
 5. Оставался FAIL по ExecStart: сравнение check.sh и setup.sh показало, что они ожидают разные пути к приложению, создала каталог app, перенесла туда server.py и обновила ExecStart.
 
 Каждая проблема становилась видна только после исправления предыдущей: ошибку доступа к каталогу нельзя было увидеть, пока программа вообще не запускалась, а проблему с адресом, пока сервис падал. После каждого изменения проверяла результат через systemctl status,journalctl, ss и check.sh.
