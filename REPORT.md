@@ -143,6 +143,93 @@ sudo ss -lntp | grep 8080
 и поменялась строка [PASS] TCP/8080 listens on 0.0.0.0
 ---
 
+## Проблема 4
+
+### Что было обнаружено
+сервис работает, но выходят следующие ошибки:
+[FAIL] systemd ExecStart is incorrect
+       Next: Inspect: systemctl status homework-app; systemctl cat homework-app; ls -l /opt/linux-devops-homework /opt/linux-devops-homework/app
+
+[FAIL] repository still contains the original broken unit
+       Next: Apply the same final unit configuration to systemd/homework-app.service before committing
+       
+при этом сервис active и /health отвечае
+
+### Как проводилась диагностика
+```bash
+grep -n "ExecStart" scripts/check.sh
+ls -l /opt/linux-devops-homework/
+grep -n "server.py" scripts/setup.sh
+grep -n "_DIR=" scripts/setup.sh
+```
+
+ExecStart ожидает такой путь к файлу if grep -q '^ExecStart=/opt/linux-devops-homework/app/server.py$' 
+и server.py сейчас копируется сюда  81:install -m 0755 "${REPO_DIR}/app/server.py" "${APP_DIR}/server.py"
+при этом 12:REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+-rwxr-xr-x 1 root root 1304 Oct  5 10:03 server.py - т.е. показывается только server, без app
+скрипты задания расходятся — setup.sh кладёт приложение в одно место,
+а check.sh ищет его в другом.
+
+### В чём была причина
+setup.sh устанавливает приложение в /opt/linux-devops-homework/server.py, а check.sh ожидает его в /opt/linux-devops-homework/app/server.py. После проблемы 1 unit-файл указывал на фактическое расположение файла, поэтому сервис работал, но не соответствовал требуемому конечному состоянию.
+
+### Что было изменено
+Изменения состояния системы (в Git не отражаются):
+```bash
+sudo mkdir /opt/linux-devops-homework/app
+sudo mv /opt/linux-devops-homework/server.py /opt/linux-devops-homework/app/server.py
+ls -l /opt/linux-devops-homework/app/
+```
+
+Изменения в репозитории:
+```bash
+# systemd/homework-app.service — было
+ExecStart=...
+стало: ExecStart=...
+sudo cp systemd/homework-app.service /etc/systemd/system/homework-app.service
+sudo systemctl daemon-reload
+sudo systemctl restart homework-app.service
+```
+
+### Почему было выбрано это решение
+
+Поменяла систему, а не скриты, потому что по правилам из README нельзя х менять
+Использовала mv, а не cp, чтобы в системе осталась одна копия server.py. При копировании было бы два одинаковых файла, и непонятно, какой из них настоящий
+mv сохраняет права и владельца файла: server.py остался -rwxr-xr-x root root, поэтому пользователь homework 
+по-прежнему может его запускать.
+Чтобы дойти до файла, нужно ещё право x на каталог: ls -ld /opt/linux-devops-homework/app показал drwxr-xr-x root root
+Расхождение между setup.sh и check.sh  недочёт самого задания? отмечаю его здесь, чтобы было понятно, почему понадобился перенос файла
+
+### Как проверялся результат
+```bash
+ systemctl status homework-app.service
+sudo bash ./scripts/check.sh
+```
+● homework-app.service - Linux DevOps Homework Service
+     Loaded: loaded (/etc/systemd/system/homework-app.service; enabled; preset: enabled)
+     Active: active (running) since Mon 2026-10-05 17:23:34 UTC; 9s ago
+ Invocation: 91d1b7be205940dfb05d3ce89636f8b0
+   Main PID: 14862 (python3)
+      Tasks: 1 (limit: 1697)
+     Memory: 10.2M (peak: 10.2M)
+        CPU: 36ms
+     CGroup: /system.slice/homework-app.service
+             └─14862 python3 /opt/linux-devops-homework/app/server.py
+
+Linux DevOps Homework Checker
+
+[PASS] systemd ExecStart points to the application
+[PASS] service runs as homework:homework
+[PASS] state directory ownership and permissions are correct
+[PASS] service is enabled
+[PASS] service is active
+[PASS] running process has the expected UID
+[PASS] TCP/8080 listens on 0.0.0.0
+[PASS] GET /health returns the expected response
+[PASS] fixed systemd unit is saved in the repository
+[PASS] fixed application configuration is saved in the repository
+
+
 ## Дополнительные наблюдения
 
 При необходимости зафиксируйте здесь сведения о процессе, `/proc`, маршрутизации или другие результаты исследования системы, которые не относятся только к одной проблеме.
