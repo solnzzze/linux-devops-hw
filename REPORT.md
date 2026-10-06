@@ -230,24 +230,61 @@ Linux DevOps Homework Checker
 [PASS] fixed application configuration is saved in the repository
 
 
-## Дополнительные наблюдения
+### Запуск скриптов задания
+sudo ./scripts/setup.sh выдавал Permission denied. ls -l scripts/ показал вывод — права без x, т.е. у setup.sh и check.sh нет права на выполнение. Без бита x файл нельзя запустить как программу даже от root. Менять эти скрипты (в том числе chmod)
+запрещено условиями, поэтому запускала их через интерпретатор:
+sudo bash ./scripts/setup.sh
+sudo bash ./scripts/check.sh 
 
-При необходимости зафиксируйте здесь сведения о процессе, `/proc`, маршрутизации или другие результаты исследования системы, которые не относятся только к одной проблеме.
+### Как определить точный ExecStart
+systemctl cat homework-app.service показывает unit файл, который использует systemd, а systemctl show -p ExecStart homework-app.serviceb  значение параметра так, как его видит systemd.
+
+
+### Маршрут до 1.1.1.1
+```bash
+ip route get 1.1.1.1
+```
+1.1.1.1 via 10.0.2.2 dev enp0s3 src 10.0.2.15 uid 100 
+Трафик до 1.1.1.1 пойдёт через интерфейс enp0s3 на шлюз 10.0.2.2 — это маршрут по умолчанию из ip route. Реальное подключение к интернету для этого не нужно: команда только показывает, какой маршрут выбрало бы ядро.
+
+### Расхождение в задании
+setup.sh устанавливает приложение в /opt/linux-devops-homework/server.py,
+а check.sh ожидает /opt/linux-devops-homework/app/server.py (проблема 4).
 
 
 ## Итоговый ход диагностики
 
-Кратко опишите весь путь от исходного нерабочего состояния до исправленного сервиса: в каком порядке проявлялись проблемы и как одна проверка приводила к следующей.
+1. Запуск setup.sh не удался из-за отсутствия права x у скрипта — запустила через bash
+2. systemctl status показал status=203/EXEC: systemd не мог запустить программу.
+ls  показал, что файла  app.py  из ExecStart нет, есть  server.py   исправила ExecStart.
+3. Программа стала запускаться, но падала с status=1/FAILURE. В journalctl нашлась PermissionError на запись в /var/lib/linux-devops-homework. systemctl show показал, что сервис работает от homework, а `ls -ld` — что каталог принадлежит root с правами 0700 chown homework:homework и chmod 0750.
+4. Сервис стал active, но check.sh сообщил, что порт доступен только через loopback.
+ss -lntp показал 127.0.0.1:8080, источник host = 127.0.0.0 в app.conf заменила на 0.0.0.0
+5. Оставался FAIL по ExecStart: сравнение check.sh и setup.sh показало, что они ожидают разные пути к приложению, создала каталог app, перенесла туда server.py и обновила ExecStart.
+
+Каждая проблема становилась видна только после исправления предыдущей: ошибку доступа к каталогу нельзя было увидеть, пока программа вообще не запускалась, а проблему с адресом, пока сервис падал. После каждого изменения проверяла результат через systemctl status,journalctl, ss и check.sh.
 
 
 ## Итоговая проверка
 
-Вставьте полный вывод успешного запуска:
-
+Скрипт запускался через bash, так как у check.sh нет права на выполнение:
 ```bash
-sudo ./scripts/check.sh
+sudo bash ./scripts/check.sh
 ```
 
-```text
-# вывод check.sh
-```
+
+Linux DevOps Homework Checker
+
+[PASS] systemd ExecStart points to the application
+[PASS] service runs as homework:homework
+[PASS] state directory ownership and permissions are correct
+[PASS] service is enabled
+[PASS] service is active
+[PASS] running process has the expected UID
+[PASS] TCP/8080 listens on 0.0.0.0
+[PASS] GET /health returns the expected response
+[PASS] fixed systemd unit is saved in the repository
+[PASS] fixed application configuration is saved in the repository
+
+Result: 10 passed, 0 failed
+
