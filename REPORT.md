@@ -240,19 +240,65 @@ sudo bash ./scripts/check.sh
 systemctl cat homework-app.service показывает unit файл, который использует systemd, а systemctl show -p ExecStart homework-app.serviceb  значение параметра так, как его видит systemd.
 
 ### Процесс сервиса
+
 ```bash
 systemctl show -p MainPID homework-app.service
 ps -o pid,ppid,user,group,cmd -p 14862
+ps -o pid,comm,cmd -p 1
 ```
-PID: 14862, PPID: 1. Родительский процесс — [что показал ps -p <PPID>].
-Процесс работает от пользователя homework и группы homework
+
+MainPID=14862
+
+    PID    PPID USER     GROUP    CMD
+  14862       1 homework homework python3 /opt/linux-devops-homework/app/server.py
+
+    PID COMMAND         CMD
+      1 systemd         /usr/lib/systemd/systemd --switched-root --system --deserialize=50
+
+
+PID процесса сервиса — 14862, PPID — 1. Процесс с PID 1 — это systemd, первый процесс системы: именно он запускает сервис по unit-файлу и следит за ним (перезапускает при падении согласно Restart=on-failure). Поэтому родителем процесса сервиса является systemd.
+
+Процесс работает от пользователя homework и группы homework, а не от root, и запущен именно /opt/linux-devops-homework/app/server.py — то есть приложение из нового расположения после исправления проблемы 4.
 
 ### /proc/<PID>
-- `/proc/<PID>/status`: [Name, State, PPid, Uid, Gid из вывода]. Uid совпадает с `id homework` (999) —
-  подтверждает, что процесс работает не от root.
-- `/proc/<PID>/cmdline`: [вывод] — подтверждает, что запущен именно `/opt/linux-devops-homework/app/server.py`.
-- `/proc/<PID>/fd/`: [что видно: 0, 1, 2 и socket:[…]]. Дескриптор [номер] — это сокет,
-  тот же `fd=3`, что показывал `ss -lntp` для порта 8080.
+
+```bash
+grep -E "Name|State|PPid|Uid|Gid" /proc/14862/status
+tr '\0' ' ' < /proc/14862/cmdline; echo
+sudo ls -l /proc/14862/fd/
+sudo ss -lntpe | grep 8080
+```
+
+
+Name:   python3
+State:  S (sleeping)
+PPid:   1
+Uid:    999     999     999     999
+Gid:    983     983     983     983
+
+python3 /opt/linux-devops-homework/app/server.py
+
+lr-x------ 1 homework homework 64 Oct  5 17:23 0 -> /dev/null
+lrwx------ 1 homework homework 64 Oct  5 17:23 1 -> socket:[123936]
+lrwx------ 1 homework homework 64 Oct  5 17:23 2 -> socket:[123936]
+lrwx------ 1 homework homework 64 Oct  5 17:23 3 -> socket:[123938]
+
+
+**/proc/14862/status** подтверждает:
+- Name: python3 — процесс является интерпретатором Python;
+- State: S (sleeping) — процесс жив и спит в ожидании входящих подключений, это нормальное состояние сервера;
+- PPid: 1 — родитель systemd (совпадает с выводом ps);
+- Uid: 999 и Gid: 983 во всех четырёх полях (реальный, эффективный, сохранённый и файловый идентификаторы) — совпадают с id homework (uid=999(homework) gid=983(homework)).
+  Значит, процесс работает от homework и не имеет прав root.
+
+**/proc/14862/cmdline** показывает python3 /opt/linux-devops-homework/app/server.py.
+В ExecStart указан только путь к скрипту, но в первой строке server.py есть shebang
+#!/usr/bin/env python3, поэтому ядро запускает интерпретатор python3 и передаёт ему скрипт как аргумент. Это подтверждает, что запущен файл из нового расположения app/.
+
+**/proc/14862/fd/** — открытые файловые дескрипторы процесса:
+- 0 (stdin) - /dev/null — systemd не подключает сервису ввод
+- 1 и 2 (stdout и stderr) - один и тот же сокет socket:[123936] — systemd направляет вывод сервиса в журнал, поэтому сообщения приложения видны в journalctl -u homework-app
+- 3 - socket:[123938] — слушающий TCP-сокет порта 8080. Это подтверждает ss -lntpe:  у строки 0.0.0.0:8080  указаны pid=14862, fd=3 и тот же номер ino:123938.
 
 ### Маршрут до 1.1.1.1
 ```bash
